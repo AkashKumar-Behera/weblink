@@ -445,3 +445,63 @@ footer a {
   width: 24px;
   height: 24px;
 }
+
+/* Responsive media queries */
+@media (max-width: 768px) {
+  h1 {
+    font-size: 2.2rem;
+  }
+  .container-card {
+    padding: 30px 24px;
+    gap: 24px;
+  }
+  .dropzone {
+    padding: 36px 20px;
+  }
+}
+
+@media (max-width: 480px) {
+  main {
+    padding: 12px;
+  }
+  h1 {
+    font-size: 1.8rem;
+    gap: 8px;
+  }
+  .app-subtitle {
+    font-size: 0.95rem;
+  }
+  .container-card {
+    padding: 24px 16px;
+    border-radius: 16px;
+    gap: 20px;
+  }
+  .code-value {
+    font-size: 2.2rem;
+    letter-spacing: 0.05em;
+  }
+  .code-input-wrapper {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .btn {
+    width: 100%;
+    justify-content: center;
+    padding: 14px 24px;
+  }
+  .dropzone {
+    padding: 24px 12px;
+    border-radius: 14px;
+  }
+  .transfer-stats {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .stat-card {
+    padding: 8px;
+  }
+  .stat-value {
+    font-size: 1rem;
+  }
+}
+
