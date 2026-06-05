@@ -79,10 +79,11 @@ export default function Home() {
   };
 
   const initWebSocket = () => {
-    // Connect to WebSockets server running locally
-    // In production, we'd use the window.location.hostname
+    // Connect to WebSocket signaling server
+    // Read from env variable (useful for Vercel production) or fallback to local port 3001
+    const envUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.hostname}:3001`;
+    const wsUrl = envUrl || `${protocol}//${window.location.hostname}:3001`;
     
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
