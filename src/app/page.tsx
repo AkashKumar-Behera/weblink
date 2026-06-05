@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
 
-const CHUNK_SIZE = 262144; // 256KB chunks (much faster!)
-const BUFFER_THRESHOLD = 1048576; // 1MB buffer threshold to allow pipelining
+const CHUNK_SIZE = 65536; // 64KB chunks (optimal packet size for SCTP / UDP fragmentation)
+const BLOCK_SIZE = 1048576; // 1MB blocks for disk read optimization (reduces FileReader overhead)
+const BUFFER_THRESHOLD = 8388608; // 8MB buffer threshold for larger network window
 
 type AppMode = 'select' | 'send' | 'receive';
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -192,7 +193,7 @@ export default function Home() {
   const setupDataChannel = (dc: RTCDataChannel) => {
     dataChannelRef.current = dc;
     dc.binaryType = 'arraybuffer';
-    dc.bufferedAmountLowThreshold = 524288; // 512KB threshold for continuous streaming pipeline
+    dc.bufferedAmountLowThreshold = 2097152; // 2MB threshold to keep high-speed pipeline full
 
     dc.onopen = () => {
       console.log('Data channel open');
@@ -267,18 +268,26 @@ export default function Home() {
     const reader = new FileReader();
     fileReaderRef.current = reader;
 
-    const readSlice = (o: number) => {
-      const slice = file.slice(offset, o + CHUNK_SIZE);
+    const readNextBlock = () => {
+      const slice = file.slice(offset, offset + BLOCK_SIZE);
       reader.readAsArrayBuffer(slice);
     };
 
     reader.onload = (e) => {
-      const buffer = e.target?.result as ArrayBuffer;
+      const blockBuffer = e.target?.result as ArrayBuffer;
       if (!dataChannelRef.current) return;
 
-      // Send chunk
-      dataChannelRef.current.send(buffer);
-      offset += buffer.byteLength;
+      const bytesInBlock = blockBuffer.byteLength;
+      let blockOffset = 0;
+
+      // Stream the block in 64KB chunks synchronously
+      while (blockOffset < bytesInBlock) {
+        const currentChunkSize = Math.min(CHUNK_SIZE, bytesInBlock - blockOffset);
+        const chunk = blockBuffer.slice(blockOffset, blockOffset + currentChunkSize);
+        dataChannelRef.current.send(chunk);
+        blockOffset += currentChunkSize;
+        offset += currentChunkSize;
+      }
       
       // Update statistics
       updateTransferStats(offset, size);
@@ -289,12 +298,12 @@ export default function Home() {
           dataChannelRef.current.onbufferedamountlow = () => {
             if (dataChannelRef.current) {
               dataChannelRef.current.onbufferedamountlow = null;
-              readSlice(offset);
+              readNextBlock();
             }
           };
         } else {
-          // Continue reading next slice
-          readSlice(offset);
+          // Continue reading next block immediately
+          readNextBlock();
         }
       } else {
         // Send EOF message
@@ -305,7 +314,7 @@ export default function Home() {
       }
     };
 
-    readSlice(0);
+    readNextBlock();
   };
 
   // --- WebRTC Receiver Handle Logic ---
