@@ -26,7 +26,13 @@ export default function Home() {
   const [transferType, setTransferType] = useState<'sending' | 'receiving' | null>(null);
   
   // Stats
+  // Stats
   const [transferMeta, setTransferMeta] = useState<{ name: string; size: number; mimeType?: string } | null>(null);
+
+  // Speed test states
+  const [isSpeedTesting, setIsSpeedTesting] = useState<boolean>(false);
+  const [speedTestResult, setSpeedTestResult] = useState<string | null>(null);
+  const isSpeedTestingRef = useRef<boolean>(false);
 
   // Refs for WebRTC
   const wsRef = useRef<WebSocket | null>(null);
@@ -62,6 +68,9 @@ export default function Home() {
       peerConnectionRef.current = null;
     }
     transferMetaRef.current = null;
+    isSpeedTestingRef.current = false;
+    setIsSpeedTesting(false);
+    setSpeedTestResult(null);
     setStatus('disconnected');
     setIsTransferring(false);
     setTransferType(null);
@@ -317,6 +326,111 @@ export default function Home() {
     readNextBlock();
   };
 
+  // --- WebRTC Speed Test Logic ---
+  const runSpeedTest = () => {
+    if (!dataChannelRef.current) return;
+    
+    setIsSpeedTesting(true);
+    isSpeedTestingRef.current = true;
+    setSpeedTestResult(null);
+    setProgress(0);
+    setSpeed('0 B/s');
+    setEta('15.0s');
+    
+    // Send speedtest-start signal
+    dataChannelRef.current.send(JSON.stringify({ type: 'speedtest-start' }));
+
+    const testDurationMs = 15000;
+    const startTime = Date.now();
+    let totalBytesSent = 0;
+    
+    lastTimeRef.current = Date.now();
+    lastBytesRef.current = 0;
+
+    // Create a 1MB dummy ArrayBuffer to reuse
+    const dummyBuffer = new ArrayBuffer(BLOCK_SIZE);
+    
+    const sendNextBlock = () => {
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= testDurationMs) {
+        // Stop speed test
+        const durationSec = elapsed / 1000;
+        const avgSpeedBps = totalBytesSent / durationSec;
+        let avgSpeedText = '';
+        if (avgSpeedBps > 1024 * 1024) {
+          avgSpeedText = `${(avgSpeedBps / (1024 * 1024)).toFixed(2)} MB/s`;
+        } else if (avgSpeedBps > 1024) {
+          avgSpeedText = `${(avgSpeedBps / 1024).toFixed(2)} KB/s`;
+        } else {
+          avgSpeedText = `${Math.floor(avgSpeedBps)} B/s`;
+        }
+
+        setIsSpeedTesting(false);
+        isSpeedTestingRef.current = false;
+        setSpeedTestResult(avgSpeedText);
+        
+        // Notify receiver
+        if (dataChannelRef.current) {
+          dataChannelRef.current.send(JSON.stringify({ 
+            type: 'speedtest-eof', 
+            avgSpeed: avgSpeedText 
+          }));
+        }
+        return;
+      }
+
+      // Update progress
+      const percent = Math.min(100, Math.floor((elapsed / testDurationMs) * 100));
+      setProgress(percent);
+      setEta(`${Math.max(0, (testDurationMs - elapsed) / 1000).toFixed(1)}s`);
+
+      // Stream the 1MB dummy block in 64KB chunks
+      let blockOffset = 0;
+      while (blockOffset < BLOCK_SIZE) {
+        const currentChunkSize = Math.min(CHUNK_SIZE, BLOCK_SIZE - blockOffset);
+        const chunk = new Uint8Array(dummyBuffer, blockOffset, currentChunkSize);
+        if (dataChannelRef.current) {
+          dataChannelRef.current.send(chunk);
+        }
+        blockOffset += currentChunkSize;
+        totalBytesSent += currentChunkSize;
+      }
+
+      // Calculate speed
+      const now = Date.now();
+      const currentElapsedSec = (now - lastTimeRef.current) / 1000;
+      if (currentElapsedSec >= 0.5) {
+        const byteDiff = totalBytesSent - lastBytesRef.current;
+        const instSpeedBps = byteDiff / currentElapsedSec;
+        let speedText = '0 B/s';
+        if (instSpeedBps > 1024 * 1024) {
+          speedText = `${(instSpeedBps / (1024 * 1024)).toFixed(2)} MB/s`;
+        } else if (instSpeedBps > 1024) {
+          speedText = `${(instSpeedBps / 1024).toFixed(2)} KB/s`;
+        } else {
+          speedText = `${Math.floor(instSpeedBps)} B/s`;
+        }
+        setSpeed(speedText);
+        lastTimeRef.current = now;
+        lastBytesRef.current = totalBytesSent;
+      }
+
+      // Flow control check
+      if (dataChannelRef.current && dataChannelRef.current.bufferedAmount > BUFFER_THRESHOLD) {
+        dataChannelRef.current.onbufferedamountlow = () => {
+          if (dataChannelRef.current) {
+            dataChannelRef.current.onbufferedamountlow = null;
+            sendNextBlock();
+          }
+        };
+      } else {
+        setTimeout(sendNextBlock, 0);
+      }
+    };
+
+    sendNextBlock();
+  };
+
   // --- WebRTC Receiver Handle Logic ---
   const handleIncomingData = (data: any) => {
     if (typeof data === 'string') {
@@ -354,8 +468,56 @@ export default function Home() {
         setProgress(100);
         transferMetaRef.current = null;
         alert('File received and downloaded!');
+      } else if (msg.type === 'speedtest-start') {
+        setIsSpeedTesting(true);
+        isSpeedTestingRef.current = true;
+        setSpeedTestResult(null);
+        setProgress(0);
+        setSpeed('0 B/s');
+        setEta('15.0s');
+        receivedSizeRef.current = 0;
+        lastTimeRef.current = Date.now();
+        lastBytesRef.current = 0;
+        
+        let elapsed = 0;
+        const interval = setInterval(() => {
+          elapsed += 100;
+          if (elapsed >= 15000 || !isSpeedTestingRef.current) {
+            clearInterval(interval);
+          } else {
+            setProgress(Math.floor((elapsed / 15000) * 100));
+            setEta(`${((15000 - elapsed) / 1000).toFixed(1)}s`);
+          }
+        }, 100);
+      } else if (msg.type === 'speedtest-eof') {
+        setIsSpeedTesting(false);
+        isSpeedTestingRef.current = false;
+        setSpeedTestResult(msg.avgSpeed);
+        setProgress(100);
+        setEta('0s');
       }
     } else {
+      if (isSpeedTestingRef.current) {
+        receivedSizeRef.current += data.byteLength;
+        const now = Date.now();
+        const duration = (now - lastTimeRef.current) / 1000;
+        if (duration >= 0.5) {
+          const byteDiff = receivedSizeRef.current - lastBytesRef.current;
+          const speedBps = byteDiff / duration;
+          let speedText = '0 B/s';
+          if (speedBps > 1024 * 1024) {
+            speedText = `${(speedBps / (1024 * 1024)).toFixed(2)} MB/s`;
+          } else if (speedBps > 1024) {
+            speedText = `${(speedBps / 1024).toFixed(2)} KB/s`;
+          } else {
+            speedText = `${Math.floor(speedBps)} B/s`;
+          }
+          setSpeed(speedText);
+          lastTimeRef.current = now;
+          lastBytesRef.current = receivedSizeRef.current;
+        }
+        return;
+      }
       // Chunk buffer received
       receivedChunksRef.current.push(data);
       receivedSizeRef.current += data.byteLength;
@@ -544,8 +706,34 @@ export default function Home() {
         {/* Connected Screen: Peer-to-peer file transfer panel */}
         {status === 'connected' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+            
+            {/* Speed Test Result Banner */}
+            {speedTestResult && !isSpeedTesting && !isTransferring && (
+              <div style={{
+                background: 'rgba(0, 240, 255, 0.08)',
+                border: '1px solid rgba(0, 240, 255, 0.2)',
+                borderRadius: '16px',
+                padding: '20px 24px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '8px',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--accent-cyan)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                  ⚡ Connection Speed Test Result
+                </div>
+                <div style={{ fontSize: '2.5rem', fontWeight: 800, color: '#fff', textShadow: '0 0 10px rgba(0, 240, 255, 0.2)' }}>
+                  {speedTestResult}
+                </div>
+                <div className="mode-desc">
+                  Average direct transfer rate between devices.
+                </div>
+              </div>
+            )}
+
             {/* Sender UI: File pick and Send button */}
-            {mode === 'send' && !isTransferring && (
+            {mode === 'send' && !isTransferring && !isSpeedTesting && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 <label className="dropzone">
                   <input 
@@ -566,9 +754,12 @@ export default function Home() {
                   </div>
                 </label>
                 
-                <div style={{ display: 'flex', gap: '16px', justifyContent: 'center' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', justifyContent: 'center' }}>
                   <button className="btn btn-secondary" onClick={cleanup}>
                     Disconnect
+                  </button>
+                  <button className="btn btn-secondary" onClick={runSpeedTest} style={{ borderColor: 'var(--accent-cyan)', color: 'var(--accent-cyan)' }}>
+                    ⚡ Test Speed
                   </button>
                   <button className="btn" onClick={sendFile} disabled={!selectedFile}>
                     Send File
@@ -578,19 +769,59 @@ export default function Home() {
             )}
 
             {/* Receiver UI: Waiting indicator */}
-            {mode === 'receive' && !isTransferring && (
+            {mode === 'receive' && !isTransferring && !isSpeedTesting && (
               <div style={{ textAlign: 'center', padding: '40px 20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div style={{ fontSize: '3rem', animation: 'pulse 2s infinite' }}>⏳</div>
                 <div className="mode-title">Waiting for files...</div>
-                <p className="mode-desc">Connected! Ask the sender to choose and send a file.</p>
-                <button className="btn btn-secondary" onClick={cleanup} style={{ alignSelf: 'center', marginTop: '16px' }}>
-                  Disconnect
-                </button>
+                <p className="mode-desc">Connected! Ask the sender to choose a file or start a speed test.</p>
+                <div style={{ display: 'flex', gap: '16px', justifyContent: 'center', marginTop: '16px' }}>
+                  <button className="btn btn-secondary" onClick={cleanup} style={{ alignSelf: 'center' }}>
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Speed Test Active UI */}
+            {isSpeedTesting && (
+              <div className="transfer-box" style={{ borderColor: 'var(--accent-cyan)' }}>
+                <div className="mode-title" style={{ fontSize: '1.2rem', display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--accent-cyan)' }}>⚡ Running Connection Speed Test</span>
+                  <span style={{ color: 'var(--accent-cyan)' }}>{progress}%</span>
+                </div>
+                
+                <div className="mode-desc">
+                  Measuring direct P2P bandwidth capacity using a simulated 15-second data stream...
+                </div>
+                
+                <div className="progress-container">
+                  <div className="progress-bar" style={{ width: `${progress}%`, background: 'linear-gradient(90deg, var(--accent-cyan), var(--accent-purple))' }} />
+                </div>
+                
+                <div className="transfer-meta">
+                  <span>Duration: 15.0s</span>
+                  <span>Testing P2P Channel</span>
+                </div>
+
+                <div className="transfer-stats">
+                  <div className="stat-card">
+                    <div className="stat-label">Current Speed</div>
+                    <div className="stat-value">{speed}</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-label">Time Remaining</div>
+                    <div className="stat-value">{eta}</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-label">Progress</div>
+                    <div className="stat-value">{progress}%</div>
+                  </div>
+                </div>
               </div>
             )}
 
             {/* Common Progress UI: Shown during active transfer */}
-            {isTransferring && transferMeta && (
+            {isTransferring && transferMeta && !isSpeedTesting && (
               <div className="transfer-box">
                 <div className="mode-title" style={{ fontSize: '1.2rem', display: 'flex', justifyContent: 'space-between' }}>
                   <span>{transferType === 'sending' ? 'Sending' : 'Receiving'} File</span>
