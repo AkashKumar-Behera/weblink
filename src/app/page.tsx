@@ -25,7 +25,7 @@ export default function Home() {
   const [transferType, setTransferType] = useState<'sending' | 'receiving' | null>(null);
   
   // Stats
-  const [transferMeta, setTransferMeta] = useState<{ name: string; size: number } | null>(null);
+  const [transferMeta, setTransferMeta] = useState<{ name: string; size: number; mimeType?: string } | null>(null);
 
   // Refs for WebRTC
   const wsRef = useRef<WebSocket | null>(null);
@@ -311,7 +311,7 @@ export default function Home() {
       const msg = JSON.parse(data);
       if (msg.type === 'meta') {
         // Initialize transfer metadata
-        setTransferMeta({ name: msg.name, size: msg.size });
+        setTransferMeta({ name: msg.name, size: msg.size, mimeType: msg.mimeType });
         setIsTransferring(true);
         setTransferType('receiving');
         setProgress(0);
@@ -323,7 +323,7 @@ export default function Home() {
         lastBytesRef.current = 0;
       } else if (msg.type === 'eof') {
         // Reassemble the file
-        const blob = new Blob(receivedChunksRef.current);
+        const blob = new Blob(receivedChunksRef.current, { type: transferMeta?.mimeType || 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         
         // Trigger download
