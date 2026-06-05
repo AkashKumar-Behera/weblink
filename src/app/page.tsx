@@ -192,6 +192,7 @@ export default function Home() {
   const setupDataChannel = (dc: RTCDataChannel) => {
     dataChannelRef.current = dc;
     dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = 524288; // 512KB threshold for continuous streaming pipeline
 
     dc.onopen = () => {
       console.log('Data channel open');
