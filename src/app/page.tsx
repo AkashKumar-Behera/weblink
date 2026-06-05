@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
 
-const CHUNK_SIZE = 16384; // 16KB chunks
-const BUFFER_THRESHOLD = 65536; // 64KB buffer threshold
+const CHUNK_SIZE = 262144; // 256KB chunks (much faster!)
+const BUFFER_THRESHOLD = 1048576; // 1MB buffer threshold to allow pipelining
 
 type AppMode = 'select' | 'send' | 'receive';
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -34,6 +34,7 @@ export default function Home() {
   const fileReaderRef = useRef<FileReader | null>(null);
   const receivedChunksRef = useRef<ArrayBuffer[]>([]);
   const receivedSizeRef = useRef<number>(0);
+  const transferMetaRef = useRef<{ name: string; size: number; mimeType?: string } | null>(null);
   
   // Speed monitoring
   const lastTimeRef = useRef<number>(0);
@@ -59,6 +60,7 @@ export default function Home() {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
+    transferMetaRef.current = null;
     setStatus('disconnected');
     setIsTransferring(false);
     setTransferType(null);
@@ -311,7 +313,9 @@ export default function Home() {
       const msg = JSON.parse(data);
       if (msg.type === 'meta') {
         // Initialize transfer metadata
-        setTransferMeta({ name: msg.name, size: msg.size, mimeType: msg.mimeType });
+        const meta = { name: msg.name, size: msg.size, mimeType: msg.mimeType };
+        setTransferMeta(meta);
+        transferMetaRef.current = meta;
         setIsTransferring(true);
         setTransferType('receiving');
         setProgress(0);
@@ -323,13 +327,14 @@ export default function Home() {
         lastBytesRef.current = 0;
       } else if (msg.type === 'eof') {
         // Reassemble the file
-        const blob = new Blob(receivedChunksRef.current, { type: transferMeta?.mimeType || 'application/octet-stream' });
+        const currentMeta = transferMetaRef.current;
+        const blob = new Blob(receivedChunksRef.current, { type: currentMeta?.mimeType || 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         
         // Trigger download
         const a = document.createElement('a');
         a.href = url;
-        a.download = transferMeta?.name || 'downloaded-file';
+        a.download = currentMeta?.name || 'downloaded-file';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -337,6 +342,7 @@ export default function Home() {
         setIsTransferring(false);
         setTransferType(null);
         setProgress(100);
+        transferMetaRef.current = null;
         alert('File received and downloaded!');
       }
     } else {
@@ -344,8 +350,9 @@ export default function Home() {
       receivedChunksRef.current.push(data);
       receivedSizeRef.current += data.byteLength;
       
-      if (transferMeta) {
-        updateTransferStats(receivedSizeRef.current, transferMeta.size);
+      const currentMeta = transferMetaRef.current;
+      if (currentMeta) {
+        updateTransferStats(receivedSizeRef.current, currentMeta.size);
       }
     }
   };
